@@ -273,3 +273,224 @@ group by url, timezone_offset
 order by num_sessions desc
 limit 100;
 ```
+
+general domain conversion rate block/monitor
+```
+select
+	clienttag, domain,
+	max(case when tegr = 'o' then conversion end) as block_percentage,
+	max(case when tegr = 'x' then conversion end) as monitor_percentage,
+	max(conversion) as conv_percentage 
+from (select
+		clienttag, domain,	tegr, sum(is_conversion), count(is_conversion),
+		sum(is_conversion)*100.0/count(is_conversion) as conversion
+	from
+		(select
+			clienttag, start_time, tegr, is_active, is_monitor, is_poc, is_client, is_relationship_paused, timezone_offset,
+				terminate_relationship, monitor_start_time, client_start_time, poc_start_time,			
+			(case when is_order_id = 0 then is_conversion when is_order_id = 1 then sum(case when order_id not like '' then 1 when order_id like '' then 0 end) end) as is_conversion,
+			(case when relevant_identifier = 0 then (case when session_type = 0 then sessionid when session_type = 1 then client_attr1
+						when session_type = 'client_attr2' then client_attr2 end)
+				 when relevant_identifier = 1 then (case when user_type = 0 then uuid when user_type = 1 then client_attr2
+						when user_type = 'client_attr1' then client_attr1 end) end) as identifier
+		from compressed_stack
+		left join client_configurations_tbl
+		using (clienttag)
+		where start_time > sysdate-1
+			and tegr in ('x','o')
+		group by clienttag, start_time, tegr, is_active, is_monitor, is_poc, is_client, is_relationship_paused, timezone_offset,
+					terminate_relationship, monitor_start_time, client_start_time, poc_start_time, is_order_id, is_conversion,
+					relevant_identifier, session_type, user_type, sessionid, client_attr1, client_attr2, uuid) cs
+	left join (select
+				clienttag, domain, is_active, agreed_in_contract
+			   from client_domains) cd
+	using (clienttag)
+	where cd.is_active = 1
+		and cd.agreed_in_contract  = 1
+		and cs.is_active = 1
+		and cs.is_relationship_paused = 0
+		and cs.terminate_relationship = 0
+		and (case when cs.is_client = 1 then dateadd(hour,timezone_offset,cs.start_time) > dateadd(hour,timezone_offset,cs.client_start_time)
+			when cs.is_poc = 1 then dateadd(hour,timezone_offset,cs.start_time) > dateadd(hour,timezone_offset,cs.poc_start_time)
+			when cs.is_monitor = 1 then dateadd(hour,timezone_offset,cs.start_time) > dateadd(hour,timezone_offset,cs.monitor_start_time) end)
+	group by clienttag, domain, tegr)
+where clienttag = 'MEUWWI324' 
+    and start_time >= '2021-02-21' 
+    and start_time <= '2021-02-21'
+group by clienttag, domain
+order by clienttag, domain;
+```
+
+
+hijacked rate per session
+```
+ compressed stack
+select
+	sum(isinfected)*100.0/count(isinfected)  as ir
+from
+	(select
+        clienttag, sessionid, max(isinfected) as isinfected
+	from compressed_stack
+	where  start_time >= '2021-02-21'
+	group by clienttag, sessionid)
+group by clienttag
+order by clienttag;
+```
+
+
+hijacked rate per user
+```
+ compressed stack
+select
+	clienttag, sum(isinfected)*100.0/count(*)  as ir
+from
+	(select
+        clienttag, max(isinfected) as isinfected
+	from compressed_Stack
+	where  start_time > sysdate-1
+	group by clienttag)
+group by clienttag
+order by clienttag;
+```
+
+
+hijacked rate per section
+```
+ stack
+select
+	section, sum(isinfected)*100.0/count(isinfected) as ir
+from
+	(select
+        sessionid, section, max(isinfected) as isinfected
+	from stack
+	where  timestamp > sysdate-1
+	group by sessionid, section)
+group by section
+order by section;
+```
+
+
+conversion rates, clean, infected, blocked, monitor
+```
+ compressed stack c/i
+select
+	clienttag,
+	max(case when isinfected = 0 then cr_percentage end) as clean_percent,
+	max(case when isinfected = 1 then cr_percentage end) as infected_percent,
+	case when clean_percent != 0 then (infected_percent/clean_percent)-1 end as uplift_infectedvsclean
+	from (select
+		clienttag, isinfected, sum(conversion)*1.0/count(conversion)*100 as cr_percentage
+	 from (select
+	 		clienttag, sessionid, isinfected, max(is_conversion) as conversion
+		from compressed_stack
+		where start_time >= '2021-04-13'
+            and clienttag = '184S28W5K'
+		group by sessionid, isinfected, clienttag)
+	group by isinfected, clienttag)
+group by clienttag
+order by uplift_infectedvsclean;
+
+ compressed stack b/m
+select
+	clienttag,
+	max(case when tegr = 'o' then cr_percentage end) as block_percentage,
+	max(case when tegr = 'x' then cr_percentage end) as monitor_percentage,
+	case when block_percentage != 0 then (monitor_percentage/block_percentage)-1 end as uplift_if_blocvsmonitor
+	from (select
+		clienttag, tegr, sum(conversion)*1.0/count(conversion)*100 as cr_percentage
+	 from (select
+	 		clienttag, sessionid, tegr, max(is_conversion) as conversion
+		from compressed_stack
+		where start_time > sysdate-1
+			and tegr in ('x','o')
+		group by sessionid, tegr, clienttag)
+	group by tegr, clienttag)
+group by clienttag
+order by uplift_if_blocvsmonitor;
+```
+
+
+checkout abandonment rates, blocked, monitor
+```
+ compressed stack b/m
+select
+	clienttag,
+	max(case when tegr = 'o' then ch_percentage end) as block_percentage,
+	max(case when tegr = 'x' then ch_percentage end) as monitor_percentage,
+	case when block_percentage != 0 then (monitor_percentage/block_percentage)-1 end as uplift_if_blocvsmonitor
+	from (select
+		clienttag, tegr, (sum(is_checkout)-sum(is_conversion))*100.0/(case when sum(is_checkout) = 0 then 1 else sum(is_checkout) end) as ch_percentage
+	 from (select
+	 		clienttag, sessionid, tegr, max(is_conversion) is_conversion, max(is_checkout) as is_checkout
+		from compressed_stack
+		where start_time > sysdate-1
+			and tegr in ('x','o')
+		group by sessionid, tegr, clienttag)
+	group by tegr, clienttag)
+group by clienttag
+order by uplift_if_blocvsmonitor;
+```
+
+
+bounce rates, clean, infected
+```
+ compressed stack c/i
+select
+	clienttag,
+	max(case when isinfected = 0 then br_percentage end) as clean_percent,
+	max(case when isinfected = 1 then br_percentage end) as infected_percent,
+	case when clean_percent != 0 then (infected_percent/clean_percent)-1 end as uplift_infectedvsclean
+	from (select
+		clienttag, isinfected, sum(is_bounce)*100.0/count(is_bounce) as br_percentage
+	 from (select
+	 		clienttag, sessionid, isinfected, (case when count(distinct max_cb) = 1 then 1 else 0 end) as is_bounce
+		from compressed_stack
+		where start_time > sysdate-1
+		group by sessionid, isinfected, clienttag)
+	group by isinfected, clienttag)
+group by clienttag
+order by uplift_infectedvsclean;
+```
+
+
+avg sessions per user, blocked, monitor
+```
+ compressed stack b/m
+select
+	uuid, avg(session_count),
+	max(case when tegr = 'o' then cr_percentage end) as block_percentage,
+	max(case when tegr = 'x' then cr_percentage end) as monitor_percentage,
+	case when block_percentage != 0 then (monitor_percentage/block_percentage)-1 end as uplift_if_blocvsmonitor
+	from (select
+			uuid, tegr, count(sessionid) as session_count, sum(conversion)*1.0/count(conversion)*100 as cr_percentage
+	 from (select
+	 		clienttag, sessionid, tegr, max(is_conversion) as conversion
+		from compressed_stack
+		where start_time > sysdate-1
+			and tegr in ('x','o')
+		group by sessionid, tegr, clienttag)
+	group by tegr, clienttag)
+group by clienttag
+order by uplift_if_blocvsmonitor;
+```
+
+
+avg page views per session, clean, infected
+```
+ compressed stack c/i
+select
+	sessionid, avg(pv_count) as pv_count,
+	max(case when isinfected = 0 then cr_percentage end) as clean_percent,
+	max(case when isinfected = 1 then cr_percentage end) as infected_percent,
+	case when clean_percent != 0 then (infected_percent/clean_percent)-1 end as uplift_infectedvsclean
+	from (select
+			sessionid, isinfected, count(max_pv) as pv_count, sum(conversion)*1.0/count(conversion)*100 as cr_percentage
+	 from (select
+	 		sessionid, max_pv, isinfected, max(is_conversion) as conversion
+		from compressed_stack
+		where start_time > sysdate-1
+		group by sessionid, isinfected, max_pv)
+	group by sessionid, isinfected)
+group by sessionid
+order by uplift_infectedvsclean;
+```
