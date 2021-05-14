@@ -10,10 +10,11 @@ group by date(created);
 ```
 
 
-conversion count
+conversions count
 ```
 select
-	sum(number_of_conversions) as conversions
+	sum(number_of_conversions) as conversions,
+	sum(number_of_order_ids) as orders
 from redshift_session_conversion_aggr_tbl
 where tag = 'INSERTHERE'
 	and created >= 'INSERTHERE'
